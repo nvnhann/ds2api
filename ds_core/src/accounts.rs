@@ -6,6 +6,7 @@ mod client;
 mod hif;
 pub(crate) mod pool;
 mod pow;
+mod wasm_discovery;
 
 use std::sync::Arc;
 
@@ -14,11 +15,12 @@ use tokio::sync::RwLock;
 use crate::CoreError;
 use crate::config::{AccountConfig, DsCoreConfig};
 pub use client::{
-    COMPLETION_SOURCE_INPUT, ChatSessionInfo, ClientError, ClientIdentity, CompletionPayload,
+    COMPLETION_SOURCE_DEFAULT, ChatSessionInfo, ClientError, ClientIdentity, CompletionPayload,
     DsClient, EmulationProfile, FetchSessionsData, HifConfig, LoginPayload, StopStreamPayload,
 };
 pub use pool::{Account, AccountGuard, AccountPool, AccountStatus, PoolError};
 pub use pow::{PowError, PowSolver};
+pub use wasm_discovery::{DiscoveryError, discover_wasm_url};
 
 /// 由配置构造 HTTP 客户端（客户端拟态身份 + HIF 风控令牌端点）
 fn build_client(config: &DsCoreConfig) -> DsClient {
@@ -59,20 +61,23 @@ pub struct Accounts {
     pool: Arc<AccountPool>,
     client: RwLock<DsClient>,
     solver: RwLock<PowSolver>,
+    /// PoW solver 当前实际加载的 WASM URL（可能和 config.wasm_url 不同——
+    /// 启动时如果配置 URL 已失效，auto-discover 会就地切换）
+    wasm_url: RwLock<String>,
 }
 
 impl Accounts {
     /// 创建并初始化账号模块
     ///
-    /// 步骤：创建 HTTP 客户端 → 加载 WASM → 初始化账号池 → 启动恢复任务
+    /// 步骤：创建 HTTP 客户端 → 加载 WASM（失败则 auto-discover 一次）
+    /// → 初始化账号池 → 启动恢复任务
     pub async fn new(
         config: &DsCoreConfig,
         account_creds: Vec<AccountConfig>,
     ) -> Result<Arc<Self>, CoreError> {
         let client = build_client(config);
 
-        let wasm_bytes = client.get_wasm().await?;
-        let solver = PowSolver::new(&wasm_bytes)?;
+        let (solver, wasm_url) = load_solver_with_fallback(&client, &config.wasm_url).await?;
 
         let session_reuse = match config.session_policy.as_str() {
             "reuse" => true,
@@ -107,7 +112,57 @@ impl Accounts {
             pool,
             client: RwLock::new(client),
             solver: RwLock::new(solver),
+            wasm_url: RwLock::new(wasm_url),
         }))
+    }
+
+    /// 当前 PoW 求解器所用 WASM URL（可能已被 auto-discover 替换）
+    pub async fn current_wasm_url(&self) -> String {
+        self.wasm_url.read().await.clone()
+    }
+
+    /// 从 chat.deepseek.com 扫一遍，报告当前官方 web client 使用的 WASM URL。
+    ///
+    /// 纯发现，不改动任何状态——由调用方决定是否 `reload_config` 切换。
+    pub async fn discover_wasm_url(&self) -> Result<String, CoreError> {
+        let client = self.client.read().await;
+        wasm_discovery::discover_wasm_url(&client)
+            .await
+            .map_err(|e| CoreError::ProviderError(format!("WASM URL 自动发现失败: {e}")))
+    }
+
+    /// 发现 + 热切换：若线上 WASM URL 与当前不同，直接重建 solver 并替换。
+    ///
+    /// 返回：
+    /// - `Ok(Some(new_url))`：已切换
+    /// - `Ok(None)`：当前 URL 已是最新
+    /// - `Err(_)`：扫描失败或新 WASM 不符合 PowSolver 预期
+    pub async fn auto_update_wasm_url(&self) -> Result<Option<String>, CoreError> {
+        let client = self.client.read().await.clone();
+        let discovered = wasm_discovery::discover_wasm_url(&client)
+            .await
+            .map_err(|e| CoreError::ProviderError(format!("WASM URL 自动发现失败: {e}")))?;
+        {
+            let current = self.wasm_url.read().await;
+            if *current == discovered {
+                return Ok(None);
+            }
+        }
+        let wasm_bytes = client
+            .get_wasm_from(&discovered)
+            .await
+            .map_err(CoreError::from)?;
+        let new_solver = PowSolver::new(&wasm_bytes)?;
+        self.pool
+            .set_client_solver(client.clone(), new_solver.clone())
+            .await;
+        *self.solver.write().await = new_solver;
+        *self.wasm_url.write().await = discovered.clone();
+        log::info!(
+            target: "ds_core::accounts",
+            "WASM URL 已通过 auto-discover 切换至: {discovered}"
+        );
+        Ok(Some(discovered))
     }
 
     // ── 供 chat 模块使用 ────────────────────────────────────────────
@@ -280,14 +335,55 @@ impl Accounts {
 
     pub async fn reload_config(&self, config: &DsCoreConfig) -> Result<(), CoreError> {
         let client = build_client(config);
-        let wasm_bytes = client.get_wasm().await?;
-        let solver = PowSolver::new(&wasm_bytes)?;
+        let (solver, wasm_url) = load_solver_with_fallback(&client, &config.wasm_url).await?;
 
         self.pool
             .set_client_solver(client.clone(), solver.clone())
             .await;
         *self.client.write().await = client;
         *self.solver.write().await = solver;
+        *self.wasm_url.write().await = wasm_url;
         Ok(())
     }
+}
+
+/// 用配置 URL 加载 WASM 并构造 solver；失败时 auto-discover 一次重试。
+///
+/// 返回 (solver, 实际使用的 wasm URL)。
+async fn load_solver_with_fallback(
+    client: &DsClient,
+    configured_url: &str,
+) -> Result<(PowSolver, String), CoreError> {
+    match try_load_solver(client, configured_url).await {
+        Ok(solver) => Ok((solver, configured_url.to_string())),
+        Err(original) => {
+            log::warn!(
+                target: "ds_core::accounts",
+                "配置的 WASM URL 加载失败（{original}），尝试 auto-discover…"
+            );
+            match wasm_discovery::discover_wasm_url(client).await {
+                Ok(discovered) if discovered == configured_url => Err(original),
+                Ok(discovered) => {
+                    log::info!(
+                        target: "ds_core::accounts",
+                        "auto-discover 到新 WASM URL: {discovered}（原配置: {configured_url}）"
+                    );
+                    let solver = try_load_solver(client, &discovered).await?;
+                    Ok((solver, discovered))
+                }
+                Err(discovery_err) => {
+                    log::warn!(
+                        target: "ds_core::accounts",
+                        "WASM URL 自动发现失败: {discovery_err}（沿用原错误）"
+                    );
+                    Err(original)
+                }
+            }
+        }
+    }
+}
+
+async fn try_load_solver(client: &DsClient, url: &str) -> Result<PowSolver, CoreError> {
+    let bytes = client.get_wasm_from(url).await?;
+    Ok(PowSolver::new(&bytes)?)
 }

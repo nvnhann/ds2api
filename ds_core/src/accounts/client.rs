@@ -260,17 +260,17 @@ pub struct CompletionPayload {
     pub search_enabled: bool,
     /// 真实客户端固定发送该字段（会话首条为 null）
     pub action: Option<serde_json::Value>,
-    /// 消息来源（官方前端的输入方式：`input` / `click` / `keyboard` / `paste` …）
+    /// 消息来源（官方上游枚举：`default` / `landing`）
     ///
-    /// 2026-10-07 从前端 bundle 提取：真实客户端的 completion payload 一定带
-    /// `source`，取值是**用户如何发出这条消息**。代理侧按「键盘输入 + 发送」的
-    /// 主路径填 `input`（真实用户最常态的方式）。
+    /// 2026-10-07 前端 bundle 里还看到 `input` / `click` / `keyboard` / `paste`，
+    /// 2026-11-04 上游把枚举收窄到 `default` / `landing`（422 unknown variant `input`），
+    /// 代理按默认会话发消息填 `default`。
     pub source: &'static str,
     pub preempt: bool,
 }
 
-/// 代理侧统一使用的 `source` 取值（对齐真实客户端的主路径：输入框输入）
-pub const COMPLETION_SOURCE_INPUT: &str = "input";
+/// 代理侧统一使用的 `source` 取值（对齐当前上游枚举：常规会话发消息）
+pub const COMPLETION_SOURCE_DEFAULT: &str = "default";
 
 #[derive(Debug, Serialize)]
 #[allow(dead_code)]
@@ -897,7 +897,12 @@ impl DsClient {
     }
 
     pub async fn get_wasm(&self) -> Result<Bytes, ClientError> {
-        let resp = self.http.get(&self.wasm_url).send().await?;
+        self.get_wasm_from(&self.wasm_url).await
+    }
+
+    /// 从指定 URL 下载 WASM（用于 auto-discover 后用新 URL 重新加载）
+    pub async fn get_wasm_from(&self, url: &str) -> Result<Bytes, ClientError> {
+        let resp = self.http.get(url).send().await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -907,6 +912,29 @@ impl DsClient {
             });
         }
         Ok(resp.bytes().await?)
+    }
+
+    /// GET 任意 URL 返回文本
+    ///
+    /// 用于 WASM URL 自动发现：抓 `chat.deepseek.com` 的 HTML 与引用的 JS bundle。
+    /// 复用底层 `wreq::Client`（含代理 / 拟态指纹），并手动贴 UA，避免走 wreq-preset
+    /// 的默认 `accept: text/html` navigation 头被上游 WAF 识别为非官方入口。
+    pub async fn fetch_text(&self, url: &str) -> Result<String, ClientError> {
+        let resp = self
+            .http
+            .get(url)
+            .header("user-agent", self.identity.user_agent.clone())
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ClientError::Status {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(resp.text().await?)
     }
 }
 

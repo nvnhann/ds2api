@@ -9,8 +9,8 @@ mod config;
 pub use accounts::PoolError;
 pub use accounts::pool::AccountStatus;
 pub use accounts::{
-    ChatSessionInfo, ClientIdentity, DsClient, EmulationProfile, FetchSessionsData, HifConfig,
-    LoginPayload,
+    ChatSessionInfo, ClientIdentity, DiscoveryError, DsClient, EmulationProfile, FetchSessionsData,
+    HifConfig, LoginPayload, discover_wasm_url,
 };
 pub use chat::{ChatRequest, ChatResponse, DeltaPrompt, FilePayload, StreamEvent};
 pub use config::{AccountConfig, DsCoreConfig};
@@ -122,5 +122,25 @@ impl DsCore {
 
     pub async fn reload_config(&self, config: &DsCoreConfig) -> Result<(), CoreError> {
         self.accounts.reload_config(config).await
+    }
+
+    /// 从 `chat.deepseek.com` 扫出官方 web client 当前使用的 WASM URL。
+    ///
+    /// 只做发现，不改状态；返回的字符串可用于更新 config.toml 或传给
+    /// [`DsCore::auto_update_wasm_url`] 立即切换。
+    pub async fn discover_wasm_url(&self) -> Result<String, CoreError> {
+        self.accounts.discover_wasm_url().await
+    }
+
+    /// PoW 求解器当前实际在用的 WASM URL（可能已被 auto-discover 替换为新版）
+    pub async fn current_wasm_url(&self) -> String {
+        self.accounts.current_wasm_url().await
+    }
+
+    /// 发现 + 热切换 WASM：如果线上 URL 与当前不同，立即重建 solver。
+    ///
+    /// 返回 `Ok(Some(new_url))` 已切换 / `Ok(None)` 已是最新 / `Err` 发现或加载失败。
+    pub async fn auto_update_wasm_url(&self) -> Result<Option<String>, CoreError> {
+        self.accounts.auto_update_wasm_url().await
     }
 }
