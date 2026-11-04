@@ -16,35 +16,30 @@
   <img src="https://img.shields.io/github/last-commit/NIyueeE/ds-free-api.svg">
 </p>
 
-[English](README.en.md)
+[中文](README.md)
 
-将免费的 DeepSeek 网页端对话反代并适配转换为标准的 OpenAI 与 Anthropic 兼容 API 协议（目前支持 chat completions 和 messages，包括流式返回与工具调用）。
+A Rust API proxy that translates DeepSeek's free web chat into standard OpenAI and Anthropic-compatible API protocols (supports chat completions, the Responses API and messages, including streaming and tool calling).
 
-## 项目亮点
+## Highlights
 
-- **零成本 API 代理**：使用 DeepSeek 免费网页端，无需官方 API Key，即可获得 OpenAI / Anthropic 兼容接口
-- **幂等重试安全**：支持 `Idempotency-Key` 请求头（Stripe / OpenAI 约定）—— 客户端超时重试
-  不会重复打到上游，命中时字节级回放同一响应并标记 `idempotent-replayed: true`
-- **三协议支持**：同时兼容 OpenAI Chat Completions、OpenAI Responses（`/v1/responses` + `GET /v1/responses/{id}` 检索）与 Anthropic Messages API，主流客户端即插即用
-- **工具调用就绪**：OpenAI function calling 完整实现，工具解析 + 三层自修复管道（文本修复 → JSON 修复 → 模型兜底），覆盖 10+ 异常格式
-- **文件上传就绪**：支持 OpenAI `file` / `image_url` content part 和 Anthropic `image` / `document` content block 的内联 data URL 文件自动上传到 DeepSeek 会话；
-  HTTP URL 自动触发搜索模式，模型可直接访问链接内容
-- **超长提示词回退**：当提示词超过模型限制时，自动使用分块补全 + 文件上传绕过
-- **Web 管理面板**：内置可视化面板，账号池状态、API Key 管理、请求日志、i18n 国际化（简体中文 / English / Bahasa Indonesia）、主题切换、响应式布局（桌面 / 平板 / 移动）与 PWA，配置热重载开箱即用
-- **Rust 实现**：单可执行文件 + 单 TOML 配置，跨平台原生高性能（Web 面板编译时嵌入，开箱即用）
-- **多账号池**：空闲最久优先轮转（DashMap 无锁读），支持水平扩展并发
-- **风控对齐（2026-10）**：按官方客户端抓包结果补齐 `x-hif-leim` 风控令牌（按设备缓存）、
-  设备身份按账号派生、传输层拟态档位可配（`emulation`，默认与 UA 自洽的原生 App 指纹）、
-  单账号滑动窗口配额与禁言早检；诊断入口 `hif_probe` / `account_check` / `identity_probe`
+- **Zero-cost API proxy**: Uses DeepSeek's free web interface — no official API key needed, get OpenAI/Anthropic-compatible endpoints for free
+- **Retry-safe**: `Idempotency-Key` support (the Stripe / OpenAI convention) — a client retry after a timeout never reaches upstream twice; the stored response is replayed byte-for-byte with `idempotent-replayed: true`
+- **Triple protocol support**: OpenAI Chat Completions, the OpenAI Responses API (`/v1/responses` plus `GET /v1/responses/{id}` retrieval) and the Anthropic Messages API — drop-in compatible with mainstream clients
+- **Tool call ready**: Full OpenAI function calling implementation with a 3-tier self-healing pipeline (text repair → JSON repair → model fallback), covering 10+ malformed formats
+- **File upload ready**: Inline data URL files in OpenAI `file`/`image_url` content parts and Anthropic `image`/`document` content blocks are automatically uploaded to DeepSeek sessions; HTTP URLs trigger search mode so the model can access link content directly
+- **Oversized prompt fallback**: When the prompt exceeds model limits, automatically falls back to chunked completion with file upload
+- **Web admin panel**: Built-in dashboard for account pool status, API key management, request logs, i18n (Simplified Chinese / English / Bahasa Indonesia), theme switcher, responsive layout (desktop / tablet / mobile) and PWA install — hot-reloadable config, ready out of the box
+- **Built with Rust**: Single binary + single TOML config, cross-platform native performance (web panel compiled in at build time)
+- **Multi-account pool**: Idle-aware round-robin selection (DashMap lock-free reads), horizontal scaling for concurrency
 
-## 快速开始
+## Quick Start
 
-### 二进制使用
+### Binary Usage
 
-1. 从 [releases](https://github.com/NIyueeE/ds-free-api/releases) 下载对应平台压缩包并解压
-2. 复制 `config.example.toml` 为 `config.toml` 并填入账号 (可选, 也可启动后在管理面板中配置)
-3. 运行 `./ds-free-api`
-4. 访问 `http://127.0.0.1:22217/admin` 设置管理密码，之后可在面板中创建 API Key 和管理账号
+1. Download and extract the archive for your platform from [releases](https://github.com/NIyueeE/ds-free-api/releases)
+2. Copy `config.example.toml` to `config.toml` and fill in accounts (optional — you can also configure via the admin panel after startup)
+3. Run `./ds-free-api`
+4. Visit `http://127.0.0.1:22217/admin` to set an admin password, then manage API keys and accounts from the panel
 
 ```bash
 ./ds-free-api
@@ -52,64 +47,69 @@
 RUST_LOG=debug ./ds-free-api
 ```
 
-> **并发**：免费 API 有 session 级速率限制。本项目内置限流检测 + 指数退避重试，确保稳定。
-> 推荐并行数 = 账号数 / 2。支持无 config.toml 启动后通过管理面板添加账号。
+> **Concurrency**: The free API has session-level rate limits. This project has built-in rate-limit detection + exponential backoff retry for stability.
+> Recommended parallelism = accounts / 2. Supports starting without `config.toml` and adding accounts via the admin panel.
 
-### Docker 使用
+### Docker Usage
 
 ```bash
-# 首次部署：先准备容器配置（见下方说明）
+# First deployment: seed the container config (see note below)
 cp docker/config.example.toml docker/config/config.toml
 
 docker compose -f docker/docker-compose.yaml up -d
 ```
 
-Compose 配置见 [docker/docker-compose.yaml](./docker/docker-compose.yaml)。
+Refer to the [sample compose file](./docker/docker-compose.yaml) for reference.
 
-管理面板在 `http://localhost:22217/admin`，首次访问设置管理密码。
-`config/` 和 `data/` 目录通过 bind mount 挂载到容器内，配置修改自动持久化到宿主机。
+The admin panel is at `http://localhost:22217/admin`. Set your admin password on first visit.
+The `config/` and `data/` directories are bind-mounted into the container — config changes persist to the host automatically.
 
-> **首次部署必须准备 `docker/config/config.toml`**（`cp` 上面那一行）。
-> 已发布镜像（≤ v0.5.1）在配置缺失时会按代码默认值生成 `host = "127.0.0.1"` 的配置，
-> 服务只监听容器内回环，宿主机的 `22217` 端口会**连不上**（容器显示 Up 但访问无响应）。
-> 从源码构建的镜像（`docker/Dockerfile` + `docker/entrypoint.sh`）已修复：配置缺失或为空时
-> 自动用内置示例（`host = "0.0.0.0"`）初始化，无需手动 `cp`。
+> **`docker/config/config.toml` is required on first deployment** (the `cp` above).
+> Published images (≤ v0.5.1) fall back to the built-in code default `host = "127.0.0.1"` when the
+> config is missing, so the server only listens on the container loopback and host port `22217`
+> becomes **unreachable** (the container looks "Up" but does not answer). Images built from source
+> (`docker/Dockerfile` + `docker/entrypoint.sh`) are fixed: a missing or empty config is seeded from
+> the bundled example (`host = "0.0.0.0"`), so the `cp` is optional there.
 
-### 免费测试账号
+### Free Test Accounts
 
-请自行注册，可以参考 [issue #62](https://github.com/NIyueeE/ds-free-api/issues/62) 的方法。
+Please register your own. You can refer to the method in [issue #62](https://github.com/NIyueeE/ds-free-api/issues/62).
 
-> **⚠️ 账号风控现状（2026-09）**：官方风控已大幅收紧，本仓库 README 与 issue 中历史公开的测试账号
-> **已全部失效**（`USER_IS_BANNED` / `user is muted` / `RISK_DEVICE_DETECTED`）。这不是项目 bug，
-> 而是上游针对共享账号的策略变化：
+> **⚠️ Account risk-control status (2026-09)**: Upstream risk control has tightened significantly.
+> Every test account previously published in this README or in the issues **is now dead**
+> (`USER_IS_BANNED` / `user is muted` / `RISK_DEVICE_DETECTED`). This is not a bug in this project —
+> it is an upstream policy change against shared accounts:
 >
-> | 上游返回 | 含义 | 处理方式 |
-> |----------|------|----------|
-> | `biz_code=10 USER_IS_BANNED` | 账号已被永久封禁 | 无法恢复，只能注册新账号 |
-> | `biz_code=5 user is muted` | 临时禁言（响应含 `mute_until`，通常数周） | 无法通过重登恢复，账号会被标记为 `invalid` |
-> | `biz_code=11 RISK_DEVICE_DETECTED` | 缺少浏览器设备指纹 | 在账号配置里补上 `device_id`（见下） |
+> | Upstream response | Meaning | What to do |
+> |-------------------|---------|------------|
+> | `biz_code=10 USER_IS_BANNED` | Account permanently banned | Unrecoverable — register a new account |
+> | `biz_code=5 user is muted` | Temporary mute (response carries `mute_until`, usually weeks) | Re-login does not help; the account is left in `invalid` |
+> | `biz_code=11 RISK_DEVICE_DETECTED` | Missing browser device fingerprint | Add `device_id` to that account's config (see below) |
 >
-> 因此现在**不建议依赖公共测试账号**。请使用自己的账号，并在 `config.toml` / 管理面板中为每个账号
-> 填写 `device_id`，否则登录会直接被风控拦截。
+> So do **not** rely on public test accounts. Use your own and set a `device_id` per account in
+> `config.toml` or the admin panel, otherwise login is rejected by risk control.
 >
-> **✅ 2026-10 更新：缺失的风控令牌已补齐。** 用真实浏览器抓包发现，官方客户端会在
-> `/chat/completion` 请求上带一个由 `hif-leim.deepseek.com` 下发的短期令牌
-> （`x-hif-leim`，有效期见响应头 `x-hif-ttl`，默认 600s）。本代理此前完全没有该头，
-> 上游无需任何行为统计即可判定请求来自非官方客户端 —— 与「每账号仅 2 次请求也被禁言」
-> 的实测现象吻合。v0.5.0 起 `ds_core` 会自动取令牌、按 TTL 刷新并附在 SSE 请求上
-> （`hif_enabled = true`，默认开启）。细节见 `docs/development.md`。
+> **✅ Update (2026-10): the missing risk-control token is now implemented.** Capturing a real
+> browser session revealed that the official client attaches a short-lived token issued by
+> `hif-leim.deepseek.com` to every `/chat/completion` request (`x-hif-leim`, TTL from the
+> `x-hif-ttl` response header, 600s by default). This proxy sent no such header at all, so
+> upstream could flag a request as non-official without any behavioural analysis — which matches
+> the observed "muted after only 2 requests per account" reports. Since v0.5.0 `ds_core` fetches
+> the token, refreshes it on TTL and attaches it to SSE requests (`hif_enabled = true` by default).
+> See `docs/development.md` for details.
 
-#### 如何获取 `device_id`
+#### How to obtain `device_id`
 
-`device_id` 是数美（Shumei）SDK 生成的设备级指纹。上游用它做账号关联与画像，
-因此**每个账号应使用各自独立的 `device_id`**（各自开一个无痕窗口 / 浏览器配置文件登录一次），
-不要把同一个值复用到多个账号。⚠️ 该值**不能伪造**（伪造的 base64 或普通字符串会返回
-`RISK_DEVICE_DETECTED`），必须来自真实浏览器；取一次长期有效：
+`device_id` is the device-level fingerprint produced by the Shumei SDK. Upstream uses it to link
+and profile accounts, so **each account should use its own `device_id`** (log in once per account in
+a separate incognito window / browser profile) — do not reuse one value across accounts. The value
+**cannot be faked** (a made-up base64 or plain string returns `RISK_DEVICE_DETECTED`); it must come
+from a real browser. One capture stays valid long-term:
 
-1. 用 Chrome 打开 `https://chat.deepseek.com/sign_in` 并登录一次（确保页面完全加载，风控脚本已初始化）
-2. 打开开发者工具 → Network，过滤 `users/login`
-3. 发起一次登录，查看该请求的 Payload，复制 `device_id` 字段的值
-4. 写入账号配置：
+1. Open `https://chat.deepseek.com/sign_in` in Chrome and log in once (let the page fully load so the risk-control script initializes)
+2. Open DevTools → Network and filter for `users/login`
+3. Trigger a login, inspect that request's payload, and copy the `device_id` value
+4. Add it to the account config:
 
    ```toml
    [[ds_core.accounts]]
@@ -117,170 +117,173 @@ Compose 配置见 [docker/docker-compose.yaml](./docker/docker-compose.yaml)。
    mobile = ""
    area_code = ""
    password = "your-password"
-   device_id = "从浏览器抓到的值"
+   device_id = "value captured from the browser"
    ```
 
-   管理面板 → 配置页同样提供该字段的编辑（留空则保留服务端已有值）。
+   The admin panel config page exposes the same field (leaving it empty keeps the existing server-side value).
 
-> 简化方案：在浏览器控制台执行 `SMSdk.getDeviceId()`（需等 `SMSdk` 就绪）也能直接拿到该值。
+> Shortcut: run `SMSdk.getDeviceId()` in the browser console (once `SMSdk` is ready) to read the value directly.
 
-## API 端点
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET  | `/`   | 重定向到管理面板 |
-| GET  | `/health` | 健康检查 |
-| POST | `/v1/chat/completions` | 聊天补全（支持流式与工具调用） |
-| POST | `/v1/responses` | OpenAI Responses API（流式 + 工具调用 + `previous_response_id`） |
-| GET  | `/v1/responses/{id}` | 检索已保存的 Response 对象（进程内有界 + TTL 缓存；未命中 404） |
-| GET  | `/v1/models` | 模型列表 |
-| GET  | `/v1/models/{id}` | 模型详情 |
-| POST | `/anthropic/v1/messages` | Anthropic Messages（支持流式与工具调用） |
-| GET  | `/anthropic/v1/models` | 模型列表（Anthropic 格式） |
-| GET  | `/anthropic/v1/models/{id}` | 模型详情（Anthropic 格式） |
+## API Endpoints
 
-管理面板位于 `/admin`，首次访问引导设置管理密码。
+| Method | Path | Description |
+|--------|------|-------------|
+| GET    | `/`   | Redirect to admin panel |
+| GET    | `/health` | Health check |
+| POST   | `/v1/chat/completions` | Chat completions (streaming + tool calls) |
+| POST   | `/v1/responses` | OpenAI Responses API (streaming + tools + `previous_response_id`) |
+| GET    | `/v1/responses/{id}` | Retrieve a stored Response object (in-process bounded+TTL cache; 404 when missing) |
+| GET    | `/v1/models` | List models |
+| GET    | `/v1/models/{id}` | Model details |
+| POST   | `/anthropic/v1/messages` | Anthropic Messages (streaming + tool calls) |
+| GET    | `/anthropic/v1/models` | List models (Anthropic format) |
+| GET    | `/anthropic/v1/models/{id}` | Model details (Anthropic format) |
 
-所有响应都带 `x-request-id`（形如 `req-1a2b`），与运行日志里的 `req=` 同源，便于对账排障。
+The admin panel is at `/admin` — on first visit you'll be guided to set an admin password.
 
-### 幂等重试（`Idempotency-Key`）
+Every response carries `x-request-id` (e.g. `req-1a2b`), the same id that appears as `req=` in the
+runtime logs, so client-side reports can be matched against server logs.
 
-在 `POST /v1/chat/completions`、`POST /v1/responses`、`POST /anthropic/v1/messages`
-上带上 `Idempotency-Key: <任意唯一串>`（SDK 一般会自动生成），语义如下：
+### Idempotent retries (`Idempotency-Key`)
 
-| 情况 | 结果 |
-|------|------|
-| 首次请求 | 正常执行 |
-| 相同 key + 相同请求体，且上一条**已结束** | 回放缓存的响应（状态码 / `Content-Type` / 响应体字节一致），响应头带 `idempotent-replayed: true` |
-| 相同 key + 相同请求体，上一条**仍在执行** | `409 idempotency_error`（不会穿透到上游） |
-| 相同 key + **不同请求体** | `400 idempotency_error`（避免键复用串答案） |
-| 上一条被客户端中断，或响应体超过 1MB | 记录作废 → 重试按首次请求处理 |
+Send `Idempotency-Key: <unique string>` on `POST /v1/chat/completions`,
+`POST /v1/responses` or `POST /anthropic/v1/messages` (SDKs usually generate one for you):
 
-缓存是**进程内**有界 + TTL 24h（1024 条 / 单条 1MB / 总量 64MB），重启即失效、不落盘。
-不带该请求头时行为与普通请求完全一致。
+| Case | Behaviour |
+|------|-----------|
+| First request | Executed normally |
+| Same key + same body, previous run **finished** | Replays the stored response (same status / `Content-Type` / body bytes) with `idempotent-replayed: true` |
+| Same key + same body, previous run **still in flight** | `409 idempotency_error` (never reaches upstream) |
+| Same key + **different body** | `400 idempotency_error` (prevents key reuse mixing up answers) |
+| Previous run was aborted by the client, or the body exceeded 1MB | Record is discarded, so a retry runs as a fresh request |
 
-## 模型映射
+The cache is **in-process**, bounded and TTL-based (24h, 1024 entries, 1MB per entry, 64MB total):
+it disappears on restart and is never written to disk. Without the header, behaviour is unchanged.
 
-> **⚠️ 上游已下线 expert / vision（2026-09）**
+## Model Mapping
+
+> **⚠️ Upstream has retired `expert` / `vision` (2026-09)**
 >
-> `/api/v0/client/settings` 的 `model_configs` 明确显示：
+> The `model_configs` array from `/api/v0/client/settings` states it plainly:
 >
-> | model_type | 名称 | enabled | switchable |
+> | model_type | Name | enabled | switchable |
 > |------------|------|---------|------------|
-> | `default` | 快速模式 | ✅ true | ✅ true |
-> | `expert` | 专家模式 | ❌ **false** | ❌ false |
-> | `vision` | 识图模式 | ❌ **false** | ❌ false |
+> | `default` | Fast mode | ✅ true | ✅ true |
+> | `expert` | Expert mode | ❌ **false** | ❌ false |
+> | `vision` | Vision mode | ❌ **false** | ❌ false |
 >
-> 即网页端已不再提供这两个模式的切换入口，**目前实际只有一个模型**。
-> 因此本项目默认只暴露 `deepseek-default`。expert / vision 的 API 仍能调用，
-> 但上游已标记为 disabled，启用后请求容易失败或行为不稳定。
-> 如确需启用，在 `config.toml` 中显式配置 `model_types`。
+> The web UI no longer offers a switcher for the latter two — **there is effectively
+> only one model now**. This project therefore exposes `deepseek-default` only.
+> The expert/vision endpoints still respond, but upstream marks them disabled, so
+> enabling them leads to flaky requests. Set `model_types` explicitly if you must.
 
-`config.toml` 中 `model_types`（默认 `["default"]`）自动映射为 `deepseek-<type>`：
+The `model_types` config in `config.toml` (default `["default"]`) maps to `deepseek-<type>`:
 
-| OpenAI 模型 ID     | DeepSeek 类型 |
-| ------------------ | ------------- |
-| `deepseek-default` | 快速模式      |
+| OpenAI Model ID    | DeepSeek Mode  |
+| ------------------ | -------------- |
+| `deepseek-default` | Fast mode      |
 
-**模型名可以直接用裸名**：`default`（大小写不敏感）等价于 `deepseek-default`，
-方便 Claude Code / Codex 等把 `model` 设成简短名字的客户端（见 issue #99）。
+**Bare model names work too**: `default` (case-insensitive) is equivalent to
+`deepseek-default`, which helps clients that set `model` to a short name
+(Claude Code, Codex — see issue #99).
 
-可选别名通过 `model_aliases` 按 index 对齐 `model_types`，默认无别名。空字符串被跳过：
+Optional aliases via `model_aliases`, aligned by index with `model_types`. Empty strings are skipped:
 
 ```toml
-# model_types    = ["default", "expert"]
-# model_aliases  = ["", "deepseek-v4-pro"]  → deepseek-v4-pro 映射到 expert（index 1）
+# model_types   = ["default", "expert"]
+# model_aliases = ["", "deepseek-v4-pro"]  → deepseek-v4-pro maps to expert (index 1)
 model_aliases = []
 ```
-Anthropic 兼容层使用相同的模型 ID，通过 `/anthropic/v1/messages` 调用。
 
-### 能力开关
+The Anthropic compatibility layer uses the same model IDs via `/anthropic/v1/messages`.
 
-- **深度思考**：默认已开启。如需显式关闭，请求体中加 `"reasoning_effort": "none"`。
-- **智能搜索**：默认已开启（DeepSeek 后端在搜索模式下会注入更强的系统提示词，提升工具调用遵循度）。如需显式关闭，请求体 中加 `"web_search_options": {"search_context_size": "none"}`。
-- **文件上传**：支持内联文件（data URL）自动上传到 DeepSeek 会话，以及 HTTP URL 自动触发搜索模式：
+### Capability Toggles
 
-  **OpenAI 端：**
+- **Deep thinking**: Enabled by default. To explicitly disable, include `"reasoning_effort": "none"` in the request body.
+- **Web search**: Enabled by default (DeepSeek injects a stronger system prompt in search mode, improving tool call adherence). To explicitly disable, include `"web_search_options": {"search_context_size": "none"}` in the request body.
+- **File upload**: Inline files (data URL) are auto-uploaded to DeepSeek sessions; HTTP URLs trigger search mode:
+
+  **OpenAI endpoint:**
   ```json
   {"type": "file", "file": {"file_data": "data:text/plain;base64,...", "filename": "doc.txt"}}
   {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
   {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}}
   ```
 
-  **Anthropic 端：**
+  **Anthropic endpoint:**
   ```json
   {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
   {"type": "document", "source": {"type": "base64", "media_type": "text/plain", "data": "..."}}
   {"type": "image", "source": {"type": "url", "url": "https://example.com/img.jpg"}}
   ```
 
-### 工具调用标签幻觉
+### Tool Call Tag Hallucination
 
-内置模糊匹配（全角 `｜`<=>`|`、`▁`<=>`_`），自动覆盖大多数变体。若模型输出格式不同的回退标签，可在控制面板中添加, 或者在 `config.toml` 的 `[ds_core]` 下追加：
+Built-in fuzzy matching handles variations (full-width `｜`<=>`|`, `▁`<=>`_`) for most formats. If the model outputs a different fallback tag, add it via the admin panel or in `config.toml` under `[ds_core]`:
 
 ```toml
 tool_call.extra_starts = ["<|tool_call_begin|>", "<tool_calls>", "<tool_call>"]
 tool_call.extra_ends = ["<|tool_call_end|>", "</tool_calls>", "</tool_call>"]
 ```
 
-## Web 管理面板
+## Web Admin Panel
 
-启动服务后访问 `http://127.0.0.1:22217/admin` 即可进入管理面板：
+Visit `http://127.0.0.1:22217/admin` after starting the server:
 
-- **概览**：请求统计、账号池状态一览（移动端自动切换为卡片式布局）
-- **账号池**：查看/添加/移除账号（含 `device_id` 字段），手动重新登录 Error 状态账号
-- **API Keys**：创建/删除 API Key，脱敏展示
-- **模型**：可用模型列表与详情，内置 cURL / Python / Node.js 调用示例
-- **配置**：账号、API Key、模型类型、工具调用标签等核心配置
-- **设置**：Server / Proxy / ds_core 客户端参数，以及管理员密码修改
-- **日志**：最近请求日志与运行时日志
+- **Dashboard**: Request statistics, account pool status at a glance (switches to a card layout on mobile)
+- **Accounts**: View/add/remove accounts (including the `device_id` field), manually re-login accounts in Error state
+- **API Keys**: Create/delete API keys, masked display
+- **Models**: Available models with details, plus built-in cURL / Python / Node.js snippets
+- **Config**: Accounts, API keys, model types and tool-call tags
+- **Settings**: Server / proxy / ds_core client parameters, and admin password change
+- **Logs**: Recent request logs and runtime logs
 
-界面支持三语切换（简体中文 / English / Bahasa Indonesia）、明暗主题（跟随系统 / 亮 / 暗）、
-侧边栏折叠（状态持久化到 `localStorage`），并可作为 PWA 添加到桌面/主屏。
+The UI supports three languages (Simplified Chinese / English / Bahasa Indonesia), light/dark themes
+(system / light / dark), a collapsible sidebar persisted to `localStorage`, and installs as a PWA.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/NIyueeE/ds-free-api/main/assets/web_p1.png" alt="管理面板概览" width="700">
+  <img src="https://raw.githubusercontent.com/NIyueeE/ds-free-api/main/assets/web_p1.png" alt="Dashboard Overview" width="700">
   <br>
-  <em>管理面板概览（Dashboard）</em>
+  <em>Dashboard overview</em>
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/NIyueeE/ds-free-api/main/assets/web_p2.png" alt="配置界面" width="700">
+  <img src="https://raw.githubusercontent.com/NIyueeE/ds-free-api/main/assets/web_p2.png" alt="Config Page" width="700">
   <br>
-  <em>配置界面（Config）</em>
+  <em>Config editor page</em>
 </p>
 
-首次访问时引导设置管理密码（bcrypt 哈希存储），登录后签发 JWT（24h 有效），支持密码重置时吊销旧 Token。
+On first visit, you'll be guided to set an admin password (stored as bcrypt hash), then issued a JWT (24h validity). Password reset revokes old tokens.
 
-## 环境变量
+## Environment Variables
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `RUST_LOG` | `info` | 日志级别（`trace` / `debug` / `info` / `warn` / `error`） |
-| `DS_DATA_DIR` | `.`（当前目录） | 数据目录，存放 `logs/runtime.log` 和 `stats.json` |
-| `DS_CONFIG_PATH` | `./config.toml` | 配置文件路径，优先级低于 `-c` 参数 |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUST_LOG` | `info` | Log level (`trace` / `debug` / `info` / `warn` / `error`) |
+| `DS_DATA_DIR` | `.` (current dir) | Data directory for `logs/runtime.log` and `stats.json` |
+| `DS_CONFIG_PATH` | `./config.toml` | Config file path (lower priority than `-c` flag) |
 
-## 安全
+## Security
 
-- **管理面板**：JWT 认证 + bcrypt 密码哈希 + 登录失败率限制（5 次失败锁定 5 分钟）
-- **API 访问**：通过管理面板创建的 API Key 鉴权（HashSet O(1) 查找）
-- **CORS**：可配置允许的 Origin 列表，默认仅 `http://localhost:22217`
-- **敏感信息**：账号 ID 在响应头中脱敏，请求体不记录日志，持久化文件权限 0600
+- **Admin panel**: JWT authentication + bcrypt password hash + login rate limiting (5 failures → 5-minute lockout)
+- **API access**: API keys created via the admin panel (HashSet O(1) lookup)
+- **CORS**: Configurable allowed origins, defaults to `http://localhost:22217`
+- **Sensitive data**: Account IDs masked in response headers, request bodies excluded from logs, persisted files at 0600 permissions
 
-## 开发
+## Development
 
-### 设计哲学
+### Design Philosophy
 
-**一个 `config.toml` 反映所有运行状态**。管理面板对配置的修改即时持久化到 `config.toml`，同时热重载到运行中的服务。
+**A single `config.toml` reflects all runtime state.** Admin panel changes are instantly persisted to `config.toml` and hot-reloaded into the running service.
 
-**非必要不引入额外运行时系统依赖**。项目始终优先选择纯 Rust 或静态链接的依赖（如 `rustls` → `wreq` + BoringSSL），确保编译产物单一二进制无外部 `.so`/`.dll` 依赖，下载即用。
+**No unnecessary runtime system dependencies.** The project prioritizes pure Rust or statically-linked dependencies (e.g., `rustls` → `wreq` with BoringSSL), ensuring a single binary with no external `.so`/`.dll` requirements — download and run.
 
-
-### 简要架构图：
+### Architecture Diagram
 
 ```mermaid
 flowchart TB
-    %% ===== 主题定义 =====
+    %% ===== Theme =====
     classDef client fill:#eff6ff,stroke:#3b82f6,stroke-width:3px,color:#1d4ed8,rx:14,ry:14
     classDef gateway fill:#fffbeb,stroke:#f59e0b,stroke-width:3px,color:#92400e,rx:12,ry:12
     classDef openai_adapter fill:#f8fafc,stroke:#0a9e7b,stroke-width:2px,color:#334155,rx:10,ry:10
@@ -288,53 +291,53 @@ flowchart TB
     classDef ds_core fill:#f8fafc,stroke:#3964fe,stroke-width:2px,color:#1e40af,rx:10,ry:10
     classDef external fill:#fef2f2,stroke:#ef4444,stroke-width:3px,color:#991b1b,rx:6,ry:6
 
-    %% ===== 节点 =====
-    Client(["🖥️ 客户端"]):::client
+    %% ===== Nodes =====
+    Client(["Client"]):::client
 
-    subgraph GW ["🌐 HTTP 接入层"]
-        Handler(["路由 / 鉴权 / 序列化"]):::gateway
+    subgraph GW ["HTTP Gateway Layer"]
+        Handler(["Router / Auth / Serialization"]):::gateway
     end
 
-    subgraph PL ["⚙️ 协议处理层"]
+    subgraph PL ["Protocol Layer"]
         direction TB
 
-        subgraph AC ["Anthropic 兼容层"]
-            A2O["请求转换<br/>Anthropic → OpenAI"]:::anthropic_compat
-            O2A["响应转换<br/>OpenAI → Anthropic"]:::anthropic_compat
+        subgraph AC ["Anthropic Compat"]
+            A2O["Request<br/>Anthropic → OpenAI"]:::anthropic_compat
+            O2A["Response<br/>OpenAI → Anthropic"]:::anthropic_compat
         end
 
-        subgraph OA ["OpenAI 适配层"]
-            ReqPipe["请求管道<br/>校验 / 工具提取 / 提示词构建"]:::openai_adapter
-            RespPipe["响应管道<br/>SSE 解析 / 格式转换 / 工具修复"]:::openai_adapter
+        subgraph OA ["OpenAI Adapter"]
+            ReqPipe["Request Pipeline<br/>Validation / Tool Extraction / Prompt Building"]:::openai_adapter
+            RespPipe["Response Pipeline<br/>SSE Parsing / Format Conversion / Tool Repair"]:::openai_adapter
         end
     end
 
-    subgraph CL ["🔧 核心层 (ds_core)"]
-        Pool["账号池轮转"]:::ds_core
-        PoW["PoW 求解"]:::ds_core
-        Session["会话编排<br/>创建销毁 / 历史上传"]:::ds_core
+    subgraph CL ["Core Layer (ds_core)"]
+        Pool["Account Pool Rotation"]:::ds_core
+        PoW["PoW Solver"]:::ds_core
+        Session["Session Orchestration<br/>Create/Destroy / History Upload"]:::ds_core
     end
 
-    DeepSeek[("🔴 DeepSeek API")]:::external
+    DeepSeek[("DeepSeek API")]:::external
 
-    %% ===== 连接 =====
-    Client -->|"HTTP 请求"| Handler
+    %% ===== Connections =====
+    Client -->|"HTTP Request"| Handler
 
-    Handler -->|"OpenAI 请求结构体"| ReqPipe
-    Handler -->|"Anthropic 请求结构体"| A2O
-    A2O -->|"OpenAI 请求结构体"| ReqPipe
+    Handler -->|"OpenAI Request"| ReqPipe
+    Handler -->|"Anthropic Request"| A2O
+    A2O -->|"OpenAI Request"| ReqPipe
 
     ReqPipe --> Pool
     Pool --> PoW
     PoW --> Session
-    Session -->|"completion 端点"| DeepSeek
+    Session -->|"completion endpoint"| DeepSeek
 
-    Session -.->|"DeepSeek SSE数据流"| RespPipe
-    RespPipe -.->|"OpenAI 响应结构体"| Handler
-    RespPipe -.->|"OpenAI 响应结构体"| O2A
-    O2A -.->|"Anthropic 响应结构体"| Handler
+    Session -.->|"DeepSeek SSE Stream"| RespPipe
+    RespPipe -.->|"OpenAI Response"| Handler
+    RespPipe -.->|"OpenAI Response"| O2A
+    O2A -.->|"Anthropic Response"| Handler
 
-    %% ===== 子图样式 =====
+    %% ===== Subgraph Styles =====
     style GW fill:#fffbeb,stroke:#f59e0b,stroke-width:2px,stroke-dasharray: 5 5
     style PL fill:#fafafa,stroke:#94a3b8,stroke-width:2px
     style AC fill:#fdf0ec,stroke:#d07354,stroke-width:2px
@@ -342,45 +345,45 @@ flowchart TB
     style CL fill:#eef2ff,stroke:#3964fe,stroke-width:2px,stroke-dasharray: 5 5
 ```
 
-### 数据管道：
+### Data Pipeline
 
-#### OpenAI (chat_completions) 处理管道:
+#### OpenAI (chat_completions) Pipeline:
 
 ```mermaid
 flowchart TB
-    %% ===== 主题定义 =====
+    %% ===== Theme =====
     classDef ds_core fill:#eef2ff,stroke:#3964fe,stroke-width:2.5px,color:#1e40af,rx:10,ry:10
     classDef openai_adapter fill:#e6f7f3,stroke:#0a9e7b,stroke-width:2.5px,color:#065f46,rx:10,ry:10
     classDef step fill:#fffbeb,stroke:#f59e0b,stroke-width:1.5px,color:#334155,rx:6,ry:6
 
-    subgraph RQ ["请求处理"]
+    subgraph RQ ["Request Pipeline"]
         direction TB
         Q1["ChatCompletionsRequest"]:::openai_adapter
-        Q2["参数校验 + 默认值"]:::step
-        Q3["工具/文件提取 + 注入提示词"]:::step
-        Q4["DeepSeek 原生标签提示词构建"]:::step
-        Q5["模型映射 + 能力开关"]:::step
-        Q6["限流重试<br/>指数退避 1s→2s→4s→8s→16s"]:::step
+        Q2["Validation + Defaults"]:::step
+        Q3["Extract tools/files + inject prompts"]:::step
+        Q4["Build DeepSeek native tag prompt"]:::step
+        Q5["Model mapping + capability toggles"]:::step
+        Q6["Retry with exp. backoff<br/>1s→2s→4s→8s→16s"]:::step
         Q7["ChatRequest"]:::ds_core
     end
 
-    subgraph RS1 ["非流式响应"]
+    subgraph RS1 ["Non-streaming Response"]
         direction TB
-        OR1["ds_core SSE 流"]:::ds_core
-        OR2["SSE 帧解析<br/>ContentDelta / Usage"]:::step
-        OR3["状态机重组<br/>合并连续文本 / 累积 usage"]:::step
-        OR4["chunk 聚合<br/>拼接 content / reasoning / tool_calls"]:::step
+        OR1["ds_core SSE stream"]:::ds_core
+        OR2["SSE frame parse<br/>ContentDelta / Usage"]:::step
+        OR3["State machine merge<br/>contiguous text / accumulate usage"]:::step
+        OR4["Chunk aggregation<br/>concat content / reasoning / tool_calls"]:::step
         OR5["ChatCompletionsResponse"]:::openai_adapter
     end
 
-    subgraph RS2 ["流式响应"]
+    subgraph RS2 ["Streaming Response"]
         direction TB
-        OS1["ds_core SSE 流"]:::ds_core
-        OS2["SSE 帧解析 + 状态机"]:::step
-        OS3["Chunk 转换<br/>DsFrame → ChatCompletionsResponseChunk"]:::step
-        OS4["工具调用 XML 解析"]:::step
-        OS5["异常工具调用自修复"]:::step
-        OS6["stop 序列检测 + obfuscation"]:::step
+        OS1["ds_core SSE stream"]:::ds_core
+        OS2["SSE frame parse + state machine"]:::step
+        OS3["Chunk conversion<br/>DsFrame → ChatCompletionsResponseChunk"]:::step
+        OS4["Tool call XML parse"]:::step
+        OS5["Malformed tool call repair"]:::step
+        OS6["Stop sequence detect + obfuscation"]:::step
         OS7["ChatCompletionsResponseChunk"]:::openai_adapter
     end
 
@@ -393,37 +396,37 @@ flowchart TB
     style RS2 fill:#f8fafc,stroke:#0a9e7b,stroke-width:2px
 ```
 
-#### Anthropic (messages) 处理管道:
+#### Anthropic (messages) Pipeline:
 
 ```mermaid
 flowchart TB
-    %% ===== 主题定义 =====
+    %% ===== Theme =====
     classDef oai fill:#e6f7f3,stroke:#0a9e7b,stroke-width:2.5px,color:#065f46,rx:10,ry:10
     classDef anth fill:#fdf0ec,stroke:#d07354,stroke-width:2.5px,color:#7c3a2a,rx:10,ry:10
     classDef step fill:#fffbeb,stroke:#f59e0b,stroke-width:1.5px,color:#334155,rx:6,ry:6
 
-    subgraph RQ ["请求处理"]
+    subgraph RQ ["Request Pipeline"]
         direction TB
         Q1["MessagesRequest"]:::anth
-        Q2["消息展开<br/>System 前置 / 文本合并 / 图片/文档映射"]:::step
-        Q3["工具映射<br/>ToolUnion → OpenAI Tool"]:::step
-        Q4["能力开关映射<br/>thinking → reasoning_effort"]:::step
+        Q2["Message expansion<br/>System prepend / text merge / image+document mapping"]:::step
+        Q3["Tool mapping<br/>ToolUnion → OpenAI Tool"]:::step
+        Q4["Capability toggle mapping<br/>thinking → reasoning_effort"]:::step
         Q5["ChatCompletionsRequest"]:::oai
     end
 
-    subgraph RS3 ["非流式响应"]
+    subgraph RS3 ["Non-streaming Response"]
         direction TB
         AR1["ChatCompletionsResponse"]:::oai
-        AR2["Content 拆解<br/>reasoning → Thinking<br/>content → Text<br/>tool_calls → ToolUse"]:::step
-        AR3["ID 映射<br/>chatcmpl → msg<br/>call → toolu"]:::step
+        AR2["Content decomposition<br/>reasoning → Thinking<br/>content → Text<br/>tool_calls → ToolUse"]:::step
+        AR3["ID mapping<br/>chatcmpl → msg<br/>call → toolu"]:::step
         AR4["MessagesResponse"]:::anth
     end
 
-    subgraph RS4 ["流式响应"]
+    subgraph RS4 ["Streaming Response"]
         direction TB
-        AS1["ChatCompletionsResponseChunk 流"]:::oai
-        AS2["Chunk 状态机<br/>块类型切换 / 索引递进"]:::step
-        AS3["事件映射<br/>content → text_delta<br/>reasoning → thinking_delta<br/>tool_calls → input_json_delta"]:::step
+        AS1["ChatCompletionsResponseChunk stream"]:::oai
+        AS2["Chunk state machine<br/>block type switch / index progression"]:::step
+        AS3["Event mapping<br/>content → text_delta<br/>reasoning → thinking_delta<br/>tool_calls → input_json_delta"]:::step
         AS4["MessagesResponseChunk"]:::anth
     end
 
@@ -436,13 +439,14 @@ flowchart TB
     style RS4 fill:#f8fafc,stroke:#d07354,stroke-width:2px
 ```
 
-详细开发指南（构建、测试、Docker 部署、e2e 测试等）见 [docs/development.md](./docs/development.md)。
-## 许可证
+For detailed development guide (building, testing, Docker deployment, e2e testing, etc.), see [docs/development.md](./docs/development.md).
+
+## License
 
 [GNU General Public License v3.0](LICENSE)
 
-[DeepSeek 官方 API](https://platform.deepseek.com/top_up) 非常便宜，请大家多多支持官方服务。
+[DeepSeek's official API](https://platform.deepseek.com/top_up) is very affordable — please support the official service.
 
-本项目的初心是想体验官方网页端灰度测试的最新模型。
+This project was born from the desire to try the latest models in DeepSeek's web interface during grayscale testing.
 
-**严禁商用**，避免对官方服务器造成压力，否则风险自担。
+**Commercial use is strictly prohibited** to avoid putting pressure on official servers. Use at your own risk.
